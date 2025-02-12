@@ -7,3 +7,13 @@ Features
 ✅ Customizable Settings: Adjust tile size, resolution (DPI), scaling factor, and alpha blending for the perfect mosaic.
 ✅ Real-Time Preview: Compare the original vs. mosaic with an interactive slider.
 ✅ Export Options: Download the final mosaic as a high-quality PNG or PDF.
+
+## Repository Structure
+
+```plaintext
+pixify/
+├── Pixify.py              # Main Streamlit application
+├── pictures/              # Example images and UI assets
+├── streamlit/             # Streamlit configuration files
+├── requirements.txt       # List of Python dependencies
+└── README.md              # This file
