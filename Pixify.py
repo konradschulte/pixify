@@ -443,13 +443,13 @@ def main():
         final_img = Image.fromarray(final_out)
         
         # Save PNG using optimize and compress_level=1.
-        png_buf = BytesIO()
-        final_img.save(png_buf, format="PNG",compress_level=1)
-        dl_name_png = f"{squares_h}x{squares_w}_{cm_tile}cm_{mosaic_dpi}dpi_{alpha_val_stored}a.png"
-        st.download_button("Download Mosaic (PNG)",
-                           data=png_buf.getvalue(),
-                           file_name=dl_name_png,
-                           mime="image/png")
+        #png_buf = BytesIO()
+        #final_img.save(png_buf, format="PNG",compress_level=1)
+        #dl_name_png = f"{squares_h}x{squares_w}_{cm_tile}cm_{mosaic_dpi}dpi_{alpha_val_stored}a.png"
+        #st.download_button("Download Mosaic (PNG)",
+        #                   data=png_buf.getvalue(),
+        #                   file_name=dl_name_png,
+        #                   mime="image/png")
         
         # Save PDF (usually smaller)
         pdf_buf = BytesIO()
