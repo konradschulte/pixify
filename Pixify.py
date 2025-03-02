@@ -1,4 +1,5 @@
 import streamlit as st
+import math
 import numpy as np
 import cv2
 import os
@@ -8,6 +9,7 @@ import concurrent.futures
 # For side-by-side comparison slider
 from streamlit_image_comparison import image_comparison
 from streamlit_cropperks import st_cropperjs  # updated import
+from streamlit_javascript import st_javascript
 
 ##########################################################
 # 1) LOADING & CROPPING
@@ -63,24 +65,6 @@ def load_part_images(files):
             completed += 1
             progress_bar.progress(completed / total)
     return [img for img in images if img is not None]
-
-def fractional_crop(image: np.ndarray, top_frac: float, bottom_frac: float,
-                    left_frac: float, right_frac: float) -> np.ndarray:
-    """
-    Crop an image based on fractional percentages for top, bottom, left, and right.
-    """
-    h, w, _ = image.shape
-    t_px = int(h * top_frac)
-    b_px = int(h * (1 - bottom_frac))
-    l_px = int(w * left_frac)
-    r_px = int(w * (1 - right_frac))
-    t_px = max(0, min(t_px, h))
-    b_px = max(0, min(b_px, h))
-    l_px = max(0, min(l_px, w))
-    r_px = max(0, min(r_px, w))
-    if t_px >= b_px or l_px >= r_px:
-        return image
-    return image[t_px:b_px, l_px:r_px]
 
 ##########################################################
 # 2) UTILS
@@ -190,6 +174,12 @@ def build_final_mosaic_kmeans(scaled_target: np.ndarray,
 ##########################################################
 def main():
     st.set_page_config(page_title="Pixify", layout="wide")
+
+    # Detect the window width using JavaScript
+    window_width = st_javascript("window.innerWidth")
+
+    # Optionally, calculate a width value (e.g., 80% of the window width)
+    comparison_width = int(window_width) if window_width else 600
     
     # Welcome message at the top of the main page
     st.markdown(
@@ -211,29 +201,29 @@ def main():
                Upload exactly one target image.
             """
         )
-        st.image("pictures/Target_example.png", caption="Exemplary target image.", width=300)
+        st.image("pictures/Target_example.png", caption="Exemplary target image.")
         st.markdown(
             """  
             2. **Crop the Target:**  
                Select your desired area by adjusting the crop and/or zoom, then click "Crop Image" to generate the final target image.
             """
         )
-        st.image("pictures/Cropping_example.png", caption="Exemplary cropped target image.", width=600)
+        st.image("pictures/Cropping_example.png", caption="Exemplary cropped target image.")
         st.markdown(
             """  
             3. **Upload Part Images:**  
                Upload multiple part images. These will be later used for recreating the target image as mosaic.
             """
         )
-        st.image("pictures/Parts_example.png", caption="Exemplary part images.", width=700)
+        st.image("pictures/Parts_example.png", caption="Exemplary part images.")
         st.markdown(
             """  
             4. **Set Mosaic Settings:**  
                Adjust the tile side, mosaic resolution (DPI), target scale-up, and alpha blending.
             """
         )
-        st.image("pictures/DPI_example.png", caption="Exemplary resolutions based on DPI values.", width=400)
-        st.image("pictures/Alpha_example.png", caption="Exemplary mosaics with different alpha values.", width=800)
+        st.image("pictures/DPI_example.png", caption="Exemplary resolutions based on DPI values.")
+        st.image("pictures/Alpha_example.png", caption="Exemplary mosaics with different alpha values.")
         st.markdown(
             """    
             5. **Build and Download:**  
@@ -253,13 +243,12 @@ def main():
     elif len(tgt_files) > 1:
         st.warning("Only one target image is allowed.")
     else:
+        target_name = tgt_files[0].name.split(".")[0]
         target_img = load_single_target(tgt_files[0])
         if target_img is None:
             st.error("Could not read target image.")
         else:
             st.session_state.target_uploaded = True
-            # st.subheader("Target Image")
-            # st.image(target_img)
     
     ############
     # Step 2: Crop Target Image (only if target image is available)
@@ -268,7 +257,7 @@ def main():
         st.header("Step 2: Crop Target Image")
         st.write("Drag the handles to crop the image below. Then click the green button to confirm cropping.")
         
-        # Create three columns: left for cropper, middle for custom button, right for cropped preview.
+        # Create two columns: left for cropper, right for cropped preview.
         col1, col2 = st.columns([1, 1])
         
         with col1:
@@ -281,14 +270,15 @@ def main():
             cropped_bytes = st_cropperjs(pic=img_bytes, btn_text="Crop Image", key="cropper")
             if not cropped_bytes:
                 cropped_bytes = img_bytes
+            else:
+                st.session_state["cropped_bytes"] = cropped_bytes
             cropped_pil = Image.open(BytesIO(cropped_bytes))
             cropped = np.array(cropped_pil)
         
         with col2:
             st.subheader("Cropped Target Image")
-            st.image(cropped, use_column_width=True)
+            st.image(cropped, use_container_width=True)
 
-    
     ############
     # Step 3: Upload Part Images (only if target image is available)
     ############
@@ -314,15 +304,30 @@ def main():
         st.header("Step 4: Mosaic Settings")
         cm_tile = st.slider("Tile side (cm)", 1.0, 5.0, 1.5, 0.5, help="The physical length of each mosaic tile side (cm).")
         mosaic_dpi = st.slider("Mosaic resolution (DPI)", 50, 300, 200, 50, help="The resolution of the final mosaic image.")
-        scale_factor = st.slider("Target image scale-up", 1.0, 20.0, 1.0, 0.5, help="Increase the size of the final mosaic image.")
+        
+        # Calculate tile side in pixels
+        tile_side_px = round((cm_tile / 2.54) * mosaic_dpi)
+        tile_side_px = max(1, tile_side_px)
+        
+        # New scale up limitations:
+        # 1. Maximum squares allowed: 40k or as limited by a real-world area of 8 sqm.
+        allowed_squares = min(40000, math.floor(80000 / (cm_tile ** 2)))
+        W, H = cropped.shape[1], cropped.shape[0]
+        # Like this, it would only hold for dpi standard 200 -> Apply dpi correction: use (200/mosaic_dpi)^2 so that at 200 dpi factor is 1,
+        # and at 300 dpi it is roughly 0.444 (1/2.302 approximately)
+        dpi_factor = min(2,(200 / mosaic_dpi) ** 2) # Added a minimum 2 to avoid explosion for dpi 50 (16 times less pixels so way too many squares)
+        max_scale_factor = float(math.floor(math.sqrt(allowed_squares * (tile_side_px ** 2) / (W * H)) * dpi_factor))
+        max_scale_factor_slider = max(1.0, max_scale_factor)
+        
+        scale_factor = st.slider("Target image scale-up", 1.0, max_scale_factor_slider, 1.0, 0.5, 
+                                  help="Increase the size of the final mosaic image. The maximum scale factor is limited to prevent excessive mosaic size.")
         alpha_val = st.slider("Alpha blending", 0.0, 0.5, 0.4, 0.05, help="Blend between the target and mosaic images.")
         
         # Compute mosaic dimensions based on current settings
         new_w = int(cropped.shape[1] * scale_factor)
         new_h = int(cropped.shape[0] * scale_factor)
         scaled_target = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        tile_side_px = round((cm_tile / 2.54) * mosaic_dpi)
-        tile_side_px = max(1, tile_side_px)
+        
         squares_w = new_w // tile_side_px
         squares_h = new_h // tile_side_px
         total_sq = squares_w * squares_h
@@ -334,7 +339,9 @@ def main():
         mosaic_width_cm = mosaic_width_in * 2.54
         mosaic_height_cm = mosaic_height_in * 2.54
 
-        st.markdown(f"### Resulting Dimensions:\n **Mosaic dimension:** {squares_w} x {squares_h} = {total_sq} squares \n **Real-world size:** {mosaic_width_cm:.1f} x {mosaic_height_cm:.1f} cm")
+        st.markdown(f"### Resulting Dimensions:\n **Mosaic dimension:** {squares_w} x {squares_h} = {total_sq} squares")
+        st.markdown(f"**Real-world size:** {mosaic_width_cm:.1f} x {mosaic_height_cm:.1f} cm")
+
     else:
         scaled_target = None
         squares_w = squares_h = None
@@ -345,6 +352,10 @@ def main():
     if target_img is not None and part_files and squares_w is not None and squares_h is not None and squares_w >= 1 and squares_h >= 1:
         st.header("Step 5: Build Mosaic")
         if st.button("Build Final Mosaic"):
+            # Clear previous heavy objects from session state to free up memory
+            for key in ["raw_mosaic", "mosaic_settings"]:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.session_state.build_trigger = True
 
     # Build mosaic if trigger is set
@@ -409,13 +420,13 @@ def main():
             alpha_val_stored = alpha_val
         raw_mosaic = st.session_state.raw_mosaic
         final_out = alpha_blend(scaled_target, raw_mosaic, alpha_val_stored)
-        preview = cv2.resize(final_out, (cropped.shape[1], cropped.shape[0]), interpolation=cv2.INTER_AREA)
+        preview = cv2.resize(final_out, (cropped.shape[1], cropped.shape[0]), interpolation=cv2.INTER_AREA) 
         image_comparison(
             Image.fromarray(cropped),
             Image.fromarray(preview),
             label1="Target",
             label2="Mosaic",
-            width=800
+            width=comparison_width
         )
         download_placeholder = st.empty()
         download_placeholder.info("Preparing downloads. Please wait...")
@@ -424,7 +435,7 @@ def main():
         # Save PNG using optimize and compress_level=1.
         png_buf = BytesIO()
         final_img.save(png_buf, format="PNG", compress_level=1)
-        dl_name_png = f"{squares_h}x{squares_w}_{cm_tile}cm_{mosaic_dpi}dpi_{alpha_val_stored}a.png"
+        dl_name_png = f"{target_name}_pixified_{squares_w}x{squares_h}squares_{cm_tile}cm_{mosaic_dpi}dpi_{alpha_val_stored}alpha.png"
         st.download_button("Download Mosaic (PNG)",
                            data=png_buf.getvalue(),
                            file_name=dl_name_png,
@@ -434,7 +445,7 @@ def main():
         pdf_buf = BytesIO()
         final_img.save(pdf_buf, format="PDF")
         pdf_buf.seek(0)
-        dl_name_pdf = f"{squares_h}x{squares_w}_{cm_tile}cm_{mosaic_dpi}dpi_{alpha_val_stored}a.pdf"
+        dl_name_pdf = f"{target_name}_pixified_{squares_w}x{squares_h}squares_{cm_tile}cm_{mosaic_dpi}dpi_{alpha_val_stored}alpha.pdf"
         st.download_button("Download Mosaic (PDF)",
                            data=pdf_buf.getvalue(),
                            file_name=dl_name_pdf,
